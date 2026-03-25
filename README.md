@@ -52,7 +52,402 @@
 
 ---
 ### РЕШЕНИЕ. Создание облачной инфраструктуры
-...
+
+Подготовим сервисный аккаунт и бекенд
+
+terraform/00-sa/variables.tf
+```
+variable "yc_token" {
+  description = "Yandex Cloud OAuth token"
+  type        = string
+  sensitive   = true
+}
+
+variable "yc_cloud_id" {
+  description = "Yandex Cloud ID"
+  type        = string
+}
+
+variable "yc_folder_id" {
+  description = "Yandex Cloud Folder ID"
+  type        = string
+}
+
+variable "default_zone" {
+  description = "Default availability zone"
+  type        = string
+  default     = "ru-central1-b"
+}
+```
+terraform/00-sa/main.tf
+```
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    yandex = {
+      source  = "yandex-cloud/yandex"
+      version = "~> 0.90"
+    }
+  }
+}
+
+provider "yandex" {
+  token     = var.yc_token
+  cloud_id  = var.yc_cloud_id
+  folder_id = var.yc_folder_id
+  zone      = var.default_zone
+}
+
+# Создание сервисного аккаунта для Terraform
+resource "yandex_iam_service_account" "tf_sa" {
+  name        = "terraform-sa"
+  description = "Service account for Terraform operations"
+}
+
+# Назначение роли editor (минимально необходимые права)
+resource "yandex_resourcemanager_folder_iam_member" "tf_sa_editor" {
+  folder_id = var.yc_folder_id
+  role      = "editor"
+  member    = "serviceAccount:${yandex_iam_service_account.tf_sa.id}"
+}
+
+# Создание статического ключа для сервисного аккаунта (для бекенда)
+resource "yandex_iam_service_account_static_access_key" "tf_sa_key" {
+  service_account_id = yandex_iam_service_account.tf_sa.id
+  description        = "Static access key for Terraform S3 backend"
+}
+
+# Создание бакета для хранения state файла
+resource "yandex_storage_bucket" "tf_state" {
+  bucket     = "tf-state-lebedev-vv-diplom"
+  acl        = "private"
+  folder_id  = var.yc_folder_id
+
+  versioning {
+    enabled = true
+  }
+
+  lifecycle_rule {
+    id      = "cleanup-old-versions"
+    enabled = true
+    
+    noncurrent_version_expiration {
+      days = 30
+    }
+  }
+
+  tags = {
+    Environment = "terraform"
+    Project     = "diplom"
+    Student     = "lebedev-vv"
+  }
+}
+
+# Выводы для использования в основной конфигурации
+output "sa_key_id" {
+  value     = yandex_iam_service_account_static_access_key.tf_sa_key.id
+  sensitive = true
+}
+
+output "sa_secret_key" {
+  value     = yandex_iam_service_account_static_access_key.tf_sa_key.secret_key
+  sensitive = true
+}
+
+output "tf_state_bucket" {
+  value = yandex_storage_bucket.tf_state.bucket
+}
+
+output "service_account_id" {
+  value = yandex_iam_service_account.tf_sa.id
+}
+```
+
+Подготовим основную инфраструктуру
+
+terraform/01-infra/variables.tf
+```
+variable "yc_token" {
+  description = "Yandex Cloud OAuth token"
+  type        = string
+  sensitive   = true
+}
+
+variable "yc_cloud_id" {
+  description = "Yandex Cloud ID"
+  type        = string
+}
+
+variable "yc_folder_id" {
+  description = "Yandex Cloud Folder ID"
+  type        = string
+}
+
+variable "default_zone" {
+  description = "Default availability zone"
+  type        = string
+  default     = "ru-central1-b"
+}
+
+variable "cluster_name" {
+  description = "Name of the Kubernetes cluster"
+  type        = string
+  default     = "diplom-cluster"
+}
+
+variable "node_group_size" {
+  description = "Number of worker nodes"
+  type        = number
+  default     = 3
+}
+
+variable "node_cores" {
+  description = "Number of CPU cores per node"
+  type        = number
+  default     = 2
+}
+
+variable "node_memory" {
+  description = "Memory in GB per node"
+  type        = number
+  default     = 4
+}
+
+variable "public_key_path" {
+  description = "Path to public SSH key"
+  type        = string
+  default     = "~/.ssh/id_rsa.pub"
+}
+```
+terraform/01-infra/main.tf
+```
+terraform {
+  required_version = ">= 1.0"
+  required_providers {
+    yandex = {
+      source  = "yandex-cloud/yandex"
+      version = "~> 0.90"
+    }
+  }
+  # backend "s3" полностью удалён
+}
+
+provider "yandex" {
+  token     = var.yc_token
+  cloud_id  = var.yc_cloud_id
+  folder_id = var.yc_folder_id
+  zone      = var.default_zone
+}
+}
+```
+terraform/01-infra/network.tf
+```
+# VPC сеть
+resource "yandex_vpc_network" "diplom_network" {
+  name = "diplom-network"
+}
+
+# Публичные подсети в трёх зонах доступности
+resource "yandex_vpc_subnet" "public_subnets" {
+  count = 3
+
+  name           = "public-subnet-${count.index + 1}"
+  zone           = element(["ru-central1-a", "ru-central1-b", "ru-central1-d"], count.index)
+  network_id     = yandex_vpc_network.diplom_network.id
+  v4_cidr_blocks = ["10.${count.index + 10}.0.0/24"]
+}
+
+# Приватные подсети для worker nodes (прерываемые ВМ)
+resource "yandex_vpc_subnet" "private_subnets" {
+  count = 3
+
+  name           = "private-subnet-${count.index + 1}"
+  zone           = element(["ru-central1-a", "ru-central1-b", "ru-central1-d"], count.index)
+  network_id     = yandex_vpc_network.diplom_network.id
+  v4_cidr_blocks = ["192.168.${count.index + 10}.0/24"]
+}
+```
+terraform/01-infra/k8s.tf
+```
+# KMS ключ для шифрования данных в кластере
+resource "yandex_kms_symmetric_key" "k8s_key" {
+  name              = "k8s-encryption-key"
+  description       = "Key for Kubernetes cluster encryption"
+  default_algorithm = "AES_128"
+  rotation_period   = "8760h"
+}
+
+# Сервисный аккаунт для кластера
+resource "yandex_iam_service_account" "k8s_cluster_sa" {
+  name        = "k8s-cluster-sa"
+  description = "Service account for Kubernetes cluster"
+}
+
+resource "yandex_iam_service_account" "k8s_node_sa" {
+  name        = "k8s-node-sa"
+  description = "Service account for Kubernetes nodes"
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "k8s_cluster_sa_editor" {
+  folder_id = var.yc_folder_id
+  role      = "editor"
+  member    = "serviceAccount:${yandex_iam_service_account.k8s_cluster_sa.id}"
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "k8s_node_sa_editor" {
+  folder_id = var.yc_folder_id
+  role      = "editor"
+  member    = "serviceAccount:${yandex_iam_service_account.k8s_node_sa.id}"
+}
+
+# Региональный мастер Kubernetes
+resource "yandex_kubernetes_cluster" "diplom_cluster" {
+  name        = var.cluster_name
+  description = "Kubernetes cluster for diploma project"
+  network_id  = yandex_vpc_network.diplom_network.id
+
+  master {
+    version = "1.31"
+    regional {
+      region = "ru-central1"
+      location {
+        zone      = "ru-central1-a"
+        subnet_id = yandex_vpc_subnet.public_subnets[0].id
+      }
+      location {
+        zone      = "ru-central1-b"
+        subnet_id = yandex_vpc_subnet.public_subnets[1].id
+      }
+      location {
+        zone      = "ru-central1-d"
+        subnet_id = yandex_vpc_subnet.public_subnets[2].id
+      }
+    }
+    public_ip = true
+  }
+
+  service_account_id      = yandex_iam_service_account.k8s_cluster_sa.id
+  node_service_account_id = yandex_iam_service_account.k8s_node_sa.id
+
+  kms_provider {
+    key_id = yandex_kms_symmetric_key.k8s_key.id
+  }
+
+  depends_on = [
+    yandex_resourcemanager_folder_iam_member.k8s_cluster_sa_editor,
+    yandex_resourcemanager_folder_iam_member.k8s_node_sa_editor
+  ]
+}
+
+# Группа worker nodes (прерываемые ВМ)
+resource "yandex_kubernetes_node_group" "worker_group" {
+  cluster_id = yandex_kubernetes_cluster.diplom_cluster.id
+  name       = "worker-group"
+  version    = "1.31"
+
+  instance_template {
+    platform_id = "standard-v3"
+    
+    resources {
+      cores  = var.node_cores
+      memory = var.node_memory
+    }
+
+    boot_disk {
+      type = "network-ssd"
+      size = 50
+    }
+
+    network_interface {
+      subnet_ids = [
+        yandex_vpc_subnet.private_subnets[0].id,
+        yandex_vpc_subnet.private_subnets[1].id,
+        yandex_vpc_subnet.private_subnets[2].id
+      ]
+      nat = false
+    }
+
+    metadata = {
+      ssh-keys = "ubuntu:${file(var.public_key_path)}"
+    }
+  }
+
+  scale_policy {
+    fixed_scale {
+      size = var.node_group_size
+    }
+  }
+
+  allocation_policy {
+    location {
+      zone = "ru-central1-a"
+    }
+    location {
+      zone = "ru-central1-b"
+    }
+    location {
+      zone = "ru-central1-d"
+    }
+  }
+
+  node_labels = {
+    "node-type"   = "worker"
+    "preemptible" = "true"
+  }
+
+  node_taints = ["preemptible=true:NoSchedule"]
+}
+
+# Container Registry для хранения Docker образов
+resource "yandex_container_registry" "diplom_registry" {
+  name      = "diplom-registry"
+  folder_id = var.yc_folder_id
+}
+
+# Назначение прав на Registry
+resource "yandex_resourcemanager_folder_iam_member" "registry_pusher" {
+  folder_id = var.yc_folder_id
+  role      = "container-registry.images.pusher"
+  member    = "serviceAccount:${yandex_iam_service_account.k8s_cluster_sa.id}"
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "registry_puller" {
+  folder_id = var.yc_folder_id
+  role      = "container-registry.images.puller"
+  member    = "serviceAccount:${yandex_iam_service_account.k8s_node_sa.id}"
+}
+
+# Выводы
+output "cluster_endpoint" {
+  value = yandex_kubernetes_cluster.diplom_cluster.master[0].external_v4_endpoint
+}
+
+output "cluster_ca_certificate" {
+  value     = yandex_kubernetes_cluster.diplom_cluster.master[0].cluster_ca_certificate
+  sensitive = true
+}
+
+output "container_registry_id" {
+  value = yandex_container_registry.diplom_registry.id
+}
+```
+
+Инициализируем terraform
+
+![img1](img/img1.jpg)
+
+Применяем изменения и сохраняем вывод с ключами для дальнейшего использования
+
+![img2](img/img2.jpg)
+
+Инициализируем
+
+![img3](img/img3.jpg)
+
+Применяем изменения через Terraform
+
+![img4](img/img4.jpg)
+
 ---
 ### Создание Kubernetes кластера
 
@@ -75,6 +470,17 @@
 3. Команда `kubectl get pods --all-namespaces` отрабатывает без ошибок.
 
 ---
+### РЕШЕНИЕ. Создание Kubernetes кластера
+Настроим доступ к кластеру и проверим его создание
+
+![img5](img/img5.jpg)
+
+Кластер успешно запущен:
+3 worker nodes с версией v1.31.2
+CoreDNS, kube-proxy, metrics-server и другие системные компоненты
+Container Registry ID: crpt4nrqi82im0rmmftq
+Cluster endpoint: https://158.160.135.191
+---
 ### Создание тестового приложения
 
 Для перехода к следующему этапу необходимо подготовить тестовое приложение, эмулирующее основное приложение разрабатываемое вашей компанией.
@@ -93,9 +499,10 @@
 2. Регистри с собранным docker image. В качестве регистри может быть DockerHub или [Yandex Container Registry](https://cloud.yandex.ru/services/container-registry), созданный также с помощью terraform.
 
 ---
-### РЕШЕНИЕ. Создание Kubernetes кластера
-...
+### РЕШЕНИЕ. Создание тестового приложения
+
 ---
+
 ### Подготовка cистемы мониторинга и деплой приложения
 
 Уже должны быть готовы конфигурации для автоматического создания облачной инфраструктуры и поднятия Kubernetes кластера.  
