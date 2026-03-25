@@ -476,10 +476,15 @@ output "container_registry_id" {
 ![img5](img/img5.jpg)
 
 Кластер успешно запущен:
+
 3 worker nodes с версией v1.31.2
+
 CoreDNS, kube-proxy, metrics-server и другие системные компоненты
+
 Container Registry ID: crpt4nrqi82im0rmmftq
+
 Cluster endpoint: https://158.160.135.191
+
 ---
 ### Создание тестового приложения
 
