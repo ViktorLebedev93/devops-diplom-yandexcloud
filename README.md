@@ -266,6 +266,59 @@ resource "yandex_vpc_subnet" "private_subnets" {
   network_id     = yandex_vpc_network.diplom_network.id
   v4_cidr_blocks = ["192.168.${count.index + 10}.0/24"]
 }
+
+# NAT-инстанс в публичной подсети
+resource "yandex_compute_instance" "nat_instance" {
+  name        = "nat-instance"
+  platform_id = "standard-v3"
+  zone        = "ru-central1-a"
+
+  resources {
+    cores  = 2
+    memory = 2
+  }
+
+  boot_disk {
+    initialize_params {
+      image_id = "fd80mrhj8fl2oe87o4e1"  # NAT instance image
+      size     = 20
+    }
+  }
+
+  network_interface {
+    subnet_id  = yandex_vpc_subnet.public_subnets[0].id
+    ip_address = "10.10.0.254"
+    nat        = true
+  }
+
+  metadata = {
+    ssh-keys = "ubuntu:${file(var.public_key_path)}"
+  }
+}
+
+# Route tables для приватных подсетей
+resource "yandex_vpc_route_table" "private_routes" {
+  count = 3
+
+  name       = "private-route-${count.index + 1}"
+  network_id = yandex_vpc_network.diplom_network.id
+
+  static_route {
+    destination_prefix = "0.0.0.0/0"
+    next_hop_address   = yandex_compute_instance.nat_instance.network_interface[0].ip_address
+  }
+}
+
+# Приватные подсети с route tables
+resource "yandex_vpc_subnet" "private_subnets_routed" {
+  count = 3
+
+  name           = "private-subnet-routed-${count.index + 1}"
+  zone           = element(["ru-central1-a", "ru-central1-b", "ru-central1-d"], count.index)
+  network_id     = yandex_vpc_network.diplom_network.id
+  v4_cidr_blocks = ["192.168.${count.index + 20}.0/24"]
+  route_table_id = yandex_vpc_route_table.private_routes[count.index].id
+}
 ```
 terraform/01-infra/k8s.tf
 ```
@@ -505,6 +558,164 @@ Cluster endpoint: https://158.160.135.191
 
 ---
 ### РЕШЕНИЕ. Создание тестового приложения
+
+Создали отдельный репозиторий https://github.com/ViktorLebedev93/diplom-test-app
+
+diplom-test-app/dockerfile
+```
+FROM nginx:alpine
+
+COPY nginx.conf /etc/nginx/nginx.conf
+COPY index.html /usr/share/nginx/html/index.html
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
+```
+diplom-test-app/nginx.conf
+```
+events {
+    worker_connections 1024;
+}
+
+http {
+    server {
+        listen 80;
+        server_name _;
+
+        location / {
+            root /usr/share/nginx/html;
+            index index.html;
+        }
+
+        location /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+    }
+}
+```
+diplom-test-app/index.html
+```
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Дипломный проект - Лебедев В.В.</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            background-color: #f0f0f0;
+            color: #333;
+        }
+        h1 { color: #2c3e50; }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .version {
+            background-color: #e8f4f8;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Дипломный проект</h1>
+        <p>Студент: Лебедев В.В.</p>
+        <p>Группа: FOPS-33</p>
+        <p>Версия: <span id="version">1.0.0</span></p>
+        <p>Дата деплоя: <span id="date"></span></p>
+        <div class="version">
+            <p>Kubernetes Cluster: <strong>diplom-cluster</strong></p>
+            <p>Registry: cr.yandex/crpt4nrqi82im0rmmftq</p>
+        </div>
+    </div>
+    <script>
+        document.getElementById('date').textContent = new Date().toLocaleString();
+    </script>
+</body>
+</html>
+```
+
+Настраиваем credintal helper, собираем образ тестового приложения и отправляем его
+
+![img6](img/img6.jpg)
+
+Убеждаемся что образ появился в registry
+
+![img7](img/img7.jpg)
+
+Создаем манифест деплоя для K8S k8s/deployment.yaml
+
+```
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: test-app
+  template:
+    metadata:
+      labels:
+        app: test-app
+    spec:
+      tolerations:
+      - key: "preemptible"
+        operator: "Equal"
+        value: "true"
+        effect: "NoSchedule"
+      containers:
+      - name: test-app
+        image: cr.yandex/crpt4nrqi82im0rmmftq/test-app:latest
+        ports:
+        - containerPort: 80
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-app-service
+  namespace: default
+spec:
+  selector:
+    app: test-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: LoadBalancer
+```
+
+Применяем манифест. Создание подов и сервисов.
+
+![img8](img/img8.jpg)
+![img8](img/img8.jpg)
+
+Проверяем доступность по внешнему IP через curl
+
+![img9](img/img9.jpg)
 
 ---
 
