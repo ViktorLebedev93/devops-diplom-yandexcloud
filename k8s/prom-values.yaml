@@ -1,0 +1,20 @@
+server:
+  tolerations:
+    - key: preemptible
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  persistentVolume:
+    enabled: false
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 100m
+alertmanager:
+  enabled: false
+pushgateway:
+  enabled: false
+nodeExporter:
+  enabled: false
+kubeStateMetrics:
+  enabled: false
