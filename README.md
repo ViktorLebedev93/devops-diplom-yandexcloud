@@ -56,6 +56,7 @@
 Подготовим сервисный аккаунт и бекенд
 
 terraform/00-sa/variables.tf
+[terraform/00-sa/variables.tf](https://github.com/ViktorLebedev93/devops-diplom-yandexcloud/blob/main/terraform/00-sa/variables.tf)
 ```
 variable "yc_token" {
   description = "Yandex Cloud OAuth token"
@@ -942,6 +943,16 @@ jobs:
 ![img14](img/img14.jpg)
 
 ---
+## 📊 ИТОГ
+| № | Этап | Статус | Результат |
+|---|------|--------|-----------|
+| 1 | Создание облачной инфраструктуры | ✅ **Выполнен** | VPC, подсети (3 зоны), NAT-инстанс, KMS, Container Registry |
+| 2 | Создание Kubernetes кластера | ✅ **Выполнен** | Managed Kubernetes (региональный мастер), 3 worker node (v1.31.2) |
+| 3 | Создание тестового приложения | ✅ **Выполнен** | Docker образ в YCR, деплой в кластер, внешний IP |
+| 4 | Подготовка системы мониторинга | ✅ **Выполнен** | Prometheus + Grafana, дашборды, внешний IP |
+| 5 | Установка и настройка CI/CD | ✅ **Выполнен** | GitHub Actions, автоматическая сборка и деплой |
+---
+
 ## Что необходимо для сдачи задания?
 
 1. Репозиторий с конфигурационными файлами Terraform и готовность продемонстрировать создание всех ресурсов с нуля.
