@@ -230,7 +230,6 @@ terraform {
       version = "~> 0.90"
     }
   }
-  # backend "s3" полностью удалён
 }
 
 provider "yandex" {
