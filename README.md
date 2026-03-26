@@ -855,7 +855,7 @@ spec:
 
 Настраиваем секреты в репозитории приложения
 
-![img12](img/img12.jpg)
+![img13](img/img13.jpg)
 
 Создаем пайплайн в репозитории .github/workflows/ci-cd.yml
 
@@ -885,27 +885,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to Yandex Cloud Container Registry
-        uses: docker/login-action@v2
+        uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ secrets.CR_USER }}
           password: ${{ secrets.CR_PASSWORD }}
 
-      - name: Build Docker image
-        run: |
-          docker build -t ${{ env.REGISTRY }}/${{ env.REGISTRY_ID }}/${{ env.IMAGE_NAME }}:latest .
-          docker tag ${{ env.REGISTRY }}/${{ env.REGISTRY_ID }}/${{ env.IMAGE_NAME }}:latest ${{ env.REGISTRY }}/${{ env.REGISTRY_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-
-      - name: Push to Registry
-        run: |
-          docker push ${{ env.REGISTRY }}/${{ env.REGISTRY_ID }}/${{ env.IMAGE_NAME }}:latest
-          docker push ${{ env.REGISTRY }}/${{ env.REGISTRY_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.REGISTRY_ID }}/${{ env.IMAGE_NAME }}:latest
+            ${{ env.REGISTRY }}/${{ env.REGISTRY_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
 
   deploy:
     needs: build-and-push
@@ -913,7 +912,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Install kubectl
-        uses: azure/setup-kubectl@v3
+        uses: azure/setup-kubectl@v4
         with:
           version: 'latest'
 
@@ -930,13 +929,17 @@ jobs:
           else
             kubectl rollout restart deployment/${{ env.K8S_DEPLOYMENT }} -n ${{ env.K8S_NAMESPACE }}
           fi
-          kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} -n ${{ env.K8S_NAMESPACE }}
+          kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} -n ${{ env.K8S_NAMESPACE }} || (kubectl describe pod -n ${{ env.K8S_NAMESPACE }} -l app=${{ env.K8S_DEPLOYMENT }} && exit 1)
 
       - name: Verify deployment
         run: |
           kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l app=${{ env.K8S_DEPLOYMENT }}
-          kubectl get svc -n ${{ env.K8S_NAMESPACE }} ${{ env.K8S_DEPLOYMENT }}-service
+          kubectl get svc -n ${{ env.K8S_NAMESPACE }} test-app-service
 ```
+
+Деплой ci-cd путем отправки коммита прошел успешно
+
+![img14](img/img14.jpg)
 
 ---
 ## Что необходимо для сдачи задания?
