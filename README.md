@@ -534,10 +534,6 @@ output "container_registry_id" {
 
 CoreDNS, kube-proxy, metrics-server и другие системные компоненты
 
-Container Registry ID: crpt4nrqi82im0rmmftq
-
-Cluster endpoint: https://158.160.135.191
-
 ---
 ### Создание тестового приложения
 
@@ -730,6 +726,100 @@ spec:
 
 Способ выполнения:
 1. Воспользоваться пакетом [kube-prometheus](https://github.com/prometheus-operator/kube-prometheus), который уже включает в себя [Kubernetes оператор](https://operatorhub.io/) для [grafana](https://grafana.com/), [prometheus](https://prometheus.io/), [alertmanager](https://github.com/prometheus/alertmanager) и [node_exporter](https://github.com/prometheus/node_exporter). Альтернативный вариант - использовать набор helm чартов от [bitnami](https://github.com/bitnami/charts/tree/main/bitnami).
+
+Деплой Prometeus
+
+k8s/prom-values.yaml
+```
+server:
+  tolerations:
+    - key: preemptible
+      operator: Equal
+      value: "true"
+      effect: NoSchedule
+  persistentVolume:
+    enabled: false
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 100m
+alertmanager:
+  enabled: false
+pushgateway:
+  enabled: false
+nodeExporter:
+  enabled: false
+kubeStateMetrics:
+  enabled: false
+```
+
+Деплой Prometheus
+![img10](img/img10.jpg)
+
+Манифест для деплоя Графаны k8s/grafana.yaml
+```
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      tolerations:
+        - key: preemptible
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      containers:
+        - name: grafana
+          image: grafana/grafana:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              value: "admin123"
+            - name: GF_SECURITY_ADMIN_USER
+              value: "admin"
+            - name: GF_INSTALL_PLUGINS
+              value: ""
+            - name: GF_SERVER_ROOT_URL
+              value: "http://localhost:3000"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: 3000
+  selector:
+    app: grafana
+```
+
+Поды запущены
+![img11](img/img11.jpg)
+
+Импортированный дашборд в Grafana по состоянию Kubernetes, сбор осуществляет Prometheus посредством node-exporters
+![img12](img/img12.jpg)
+
 
 ### Деплой инфраструктуры в terraform pipeline
 
