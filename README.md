@@ -830,6 +830,7 @@ spec:
 ![img11](img/img11.jpg)
 
 Импортированный дашборд в Grafana по состоянию Kubernetes, сбор осуществляет Prometheus посредством node-exporters
+
 ![img12](img/img12.jpg)
 ---
 ### Установка и настройка CI/CD
@@ -851,7 +852,92 @@ spec:
 
 ---
 ### РЕШЕНИЕ.  Установка и настройка CI/CD
-...
+
+Настраиваем секреты в репозитории приложения
+
+![img12](img/img12.jpg)
+
+Создаем пайплайн в репозитории .github/workflows/ci-cd.yml
+
+```
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'Dockerfile'
+      - 'nginx.conf'
+      - 'index.html'
+      - '.github/workflows/ci-cd.yml'
+  release:
+    types: [created]
+
+env:
+  REGISTRY: cr.yandex
+  REGISTRY_ID: crpt4nrqi82im0rmmftq
+  IMAGE_NAME: test-app
+  K8S_NAMESPACE: default
+  K8S_DEPLOYMENT: test-app
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Yandex Cloud Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.CR_USER }}
+          password: ${{ secrets.CR_PASSWORD }}
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ env.REGISTRY }}/${{ env.REGISTRY_ID }}/${{ env.IMAGE_NAME }}:latest .
+          docker tag ${{ env.REGISTRY }}/${{ env.REGISTRY_ID }}/${{ env.IMAGE_NAME }}:latest ${{ env.REGISTRY }}/${{ env.REGISTRY_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Push to Registry
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.REGISTRY_ID }}/${{ env.IMAGE_NAME }}:latest
+          docker push ${{ env.REGISTRY }}/${{ env.REGISTRY_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+  deploy:
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main' || github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Configure kubectl
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
+
+      - name: Deploy to Kubernetes
+        run: |
+          if [ "${{ github.event_name }}" == "release" ]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+            kubectl set image deployment/${{ env.K8S_DEPLOYMENT }} ${{ env.K8S_DEPLOYMENT }}=${{ env.REGISTRY }}/${{ env.REGISTRY_ID }}/${{ env.IMAGE_NAME }}:$VERSION -n ${{ env.K8S_NAMESPACE }}
+          else
+            kubectl rollout restart deployment/${{ env.K8S_DEPLOYMENT }} -n ${{ env.K8S_NAMESPACE }}
+          fi
+          kubectl rollout status deployment/${{ env.K8S_DEPLOYMENT }} -n ${{ env.K8S_NAMESPACE }}
+
+      - name: Verify deployment
+        run: |
+          kubectl get pods -n ${{ env.K8S_NAMESPACE }} -l app=${{ env.K8S_DEPLOYMENT }}
+          kubectl get svc -n ${{ env.K8S_NAMESPACE }} ${{ env.K8S_DEPLOYMENT }}-service
+```
+
 ---
 ## Что необходимо для сдачи задания?
 
